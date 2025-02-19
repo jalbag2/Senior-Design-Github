@@ -1,0 +1,231 @@
+///////////////////////////////////////////
+//				               			           //
+//		    Team Quibbits & QuantCAD       //
+//	      Coil Testing Device Driver     //
+//												               //
+///////////////////////////////////////////
+
+/* 
+	TODO:
+	--------------------------------------------
+	- Calculate distance per step for all motors
+	- Connect limit switches to Arduino
+	- Test code in practice and adjust
+  --------------------------------------------
+*/
+
+// Includes
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+
+// Motor Struct
+struct Motor {
+	char id;						    	// Motor ID (x,y,z)
+	int step;					      	// Step Enable Pin Number
+	int dir;						    	// Direction Set Pin Number
+	float distancePerStep;		// Distance/Step in MM (Dependent on belt/gear)
+};
+
+// Device instance declarations
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
+Adafruit_BMP280 bmp;
+Motor xMotor = {'x', 2, 5, 0.2};
+Motor yMotor = {'y', 3, 6, 0.2};
+Motor zMotor = {'z', 4, 7, 0.037465};
+
+// Pin definitions
+const int stepPinX = 2; 		// Step X pin
+const int dirPinX = 5;  		// Direction X pin
+const int stepPinY = 3; 		// Step Y pin
+const int dirPinY = 6;  		// Direction Y pin
+const int stepPinZ = 4; 		// Step Z pin
+const int dirPinZ = 7;  		// Direction Z pin
+const int enPin = 8;   			// Enable pin
+const int brakePinX = 9; 		// Limit X pin
+const int brakePinY = 10;   // Limit Y pin
+const int brakePinZ = 11; 	// Limit Z pin
+
+
+// Movement parameters (Will probably be removed once the structs are set up)
+const float mmPerStep = 0.2; // Movement per step (for GT2 belt with 20T pulley)
+const float distanceInches = 6.0; // Distance to move in inches
+const float distanceMM = distanceInches * 25.4; // Convert inches to mm
+const int totalSteps = distanceMM / mmPerStep; // Convert mm to steps
+const int stepDelay = 236220/1; // Microseconds per step (236.2 ms) to complete in 60 sec
+
+// Initialization
+void setup() {
+
+  Serial.begin(115200); // Initialize serial connection
+  Serial.println("\n\n\nSerial connection successfully initiated - Baud Rate: 115200 bits/sec");
+
+  // Check BNO055, if not detected, report error
+  if (!bno.begin())
+  {
+    Serial.println("No BNO055 detected ... Check your wiring or I2C ADDR!");
+    while (1);
+  }
+  // Check BMP280, if not detected, report error
+  if (!bmp.begin()) {
+    Serial.println("No BMP280 detected ... Check your wiring or I2C ADDR!");
+    while (1);
+  }
+
+  // Set Magnetometer Parameters
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
+                  Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
+                  Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
+                  Adafruit_BMP280::FILTER_X16,      /* Filtering. */
+                  Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
+
+  // Report successful magnetometer initialization
+  Serial.println("Found BNO055 and BMP280 sensors!");
+  delay(1000);
+  
+  // Pin initialization
+  pinMode(stepPinX, OUTPUT);
+  pinMode(dirPinX, OUTPUT);
+  pinMode(stepPinY, OUTPUT);
+  pinMode(dirPinY, OUTPUT);
+  pinMode(stepPinZ, OUTPUT);
+  pinMode(dirPinZ, OUTPUT);
+  pinMode(enPin, OUTPUT);
+  pinMode(brakePinX, INPUT);
+	pinMode(brakePinY, INPUT);
+	pinMode(brakePinZ, INPUT);
+  digitalWrite(enPin, LOW); // Enable motor driver
+
+  Serial.println("CNC Shield 3.0 necessary pins initialized");
+
+	//resetSeq();					    // Initiate Reset Sequence on Launch
+}
+
+// Operational Loop
+void loop() {
+  
+  // Hold until initialization
+	// while(/* Whatever the start button ends up being */ == LOW) {
+	//   delayMicroseconds(1);
+	// }
+  
+  Serial.println("Scan beginning... do not disturb the device or any metallic/magnetic objects nearby");
+	fullScan();
+
+	//resetSeq();
+}
+
+//PROTOTYPE Movement Function (Generic axis)
+void move(Motor motor, float distance) {
+	int steps = abs(distance/motor.distancePerStep);      // Convert distance to steps
+	digitalWrite(motor.dir, (distance > 0) ? HIGH : LOW); // Adjust direction pin to match requested direction
+	
+	for (int i = 0; i < steps; i++) {                     // Motor stepping loop
+		digitalWrite(motor.step, HIGH);
+		delayMicroseconds(stepDelay);
+		digitalWrite(motor.step, LOW);
+		delayMicroseconds(stepDelay);
+	}
+}
+
+//Reset Sequence, should move all 3 axes to default position
+void resetSeq() {
+
+  //DEBUG (Output read-ins for all limit pins)
+  Serial.println("Reset sequence initialized");
+
+  // Reset loop (if brake pins not triggered, move motors to limit switches)
+	while(brakePinX == LOW && brakePinY == LOW && brakePinZ == LOW) { 
+		if(brakePinX == LOW) {
+			move(xMotor, 2.54);
+		}
+		
+		if(brakePinY == LOW) {
+			move(yMotor, 2.54);
+		}
+		
+		if(brakePinZ == LOW) {
+			move(zMotor, 2.54);
+		}
+	}
+
+  Serial.println("Reset sequence finished");
+}
+
+// Magnetometer polling function
+void pollMagnetometer(int ix, int iy, int iz) {
+
+  // Declarations
+	sensors_event_t magnetometerData;                  // Magnetometer event
+  double mx  = -999999, my  = -999999, mz = -999999; // 3-axis field strengths
+  double x, y, z;                                    // Double casted parameters
+
+  // Set up X value according to movement pattern
+  if(pow(-1, iy+iz) == 1) {
+    x = 0.1*double(ix);
+  } else {
+    x = 13.5 - 0.1*double(ix);
+  }
+  // Set up Y value according to movement pattern
+  if(pow(-1, iz) == 1) {
+    y = 0.1*double(iy);
+  } else {
+    y = 8.9 - 0.1*double(iy);
+  }
+
+  // Set up Z value
+  z = 0.1*double(iz);
+
+  // Poll magnetometer and store to outut variables
+  bno.getEvent(&magnetometerData, Adafruit_BNO055::VECTOR_MAGNETOMETER);
+  mx = magnetometerData.magnetic.x;
+  my = magnetometerData.magnetic.y;
+  mz = magnetometerData.magnetic.z;
+
+  // DEBUG OUT
+  // Serial.print("Position X: ");
+  // Serial.print(x);
+  // Serial.print("in, Y: ");
+  // Serial.print(y);
+  // Serial.print("in, Z: ");
+  // Serial.print(z);
+  // Serial.print("in || ");
+  // Serial.print(" mX: ");
+  // Serial.print(mx);
+  // Serial.print(", mY: ");
+  // Serial.print(my);
+  // Serial.print(", mZ: ");
+  // Serial.println(mz);
+
+  // CSV OUT
+  Serial.print(x);
+  Serial.print(",");
+  Serial.print(y);
+  Serial.print(",");
+  Serial.print(z);
+  Serial.print(",");
+  Serial.print(mx);
+  Serial.print(",");
+  Serial.print(my);
+  Serial.print(",");
+  Serial.print(mz);
+  Serial.print("\n");
+
+}
+
+//Scan loop, begin upon scan request
+void fullScan() {
+
+	for(int i = 0; i < 60; i++) {
+		for(int j = 0; j < 90; j++) {
+			for(int k = 0; k < 136; k++) {
+				move(xMotor, (2.54*pow(-1, j+i))); // Move X axis (alternate direction for time saving)
+				pollMagnetometer(k, j, i);
+			}
+			move(yMotor, (2.54*pow(-1, i)));
+		}
+		move(zMotor, 2.54);
+	}
+}
